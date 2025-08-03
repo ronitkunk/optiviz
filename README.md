@@ -1,7 +1,7 @@
 # OptiViz
 OptiViz enables effortless visualisation of the optimisation sequence of *any* PyTorch optimiser on *any* differentiable function in one or two variables. OptiViz might find educational use in an introductory nonlinear optimisation or deep learning class.
 
-![Vanilla gradient descent minimising a convex quadratic form.](https://github.com/ronitkunk/optiviz/sgd.png)
+![Vanilla gradient descent minimising a convex quadratic form.](https://github.com/ronitkunk/optiviz/blob/main/sgd.png)
 
 # Installation
 To install OptiViz, please use:
