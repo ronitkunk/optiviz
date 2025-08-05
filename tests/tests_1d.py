@@ -11,6 +11,7 @@ def test_f_minimizer_1d():
     arg_f_min = optimise(
         f,
         init_vector=(12.5,),
+        plot_centre=(0.0,),
         plot_boundary=25,
         iters=100,
         optimiser=torch.optim.SGD,
@@ -22,6 +23,7 @@ def test_g_minimizer_1d():
     arg_g_min = optimise(
         g,
         init_vector=(12.5,),
+        plot_centre=(0.0,),
         plot_boundary=25,
         iters=100,
         optimiser=torch.optim.Adam,

@@ -35,14 +35,15 @@ def g(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
     """
     return x ** 2 + y ** 2 + x.sin() * y.sin()
 ```
-The `optiviz.optimise` function (please see docstring) is used to visualise the optimisation sequence of the objective function using a PyTorch optimiser.
+The `optiviz.optimise` function (please see docstring for complete usage) is used to visualise the optimisation sequence of the objective function using a PyTorch optimiser.
 ```python
 arg_g_min = optimise(
         g, # objective function
         (12.5, 12.5), # initial values of the parameters being adjusted
+        plot_centre=(0, 0),
         plot_boundary=25,
         iters=100,
         optimiser=torch.optim.Adam, # PyTorch-compatible optimiser
-        lr=5e-1
+        lr=5e-1 # any keyword arguments for the optimiser
     )
 ```

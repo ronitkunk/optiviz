@@ -1,6 +1,6 @@
 [project]
 name = "optiviz"
-version = "0.1.0"
+version = "0.1.3"
 description = "Educational tool for visualizing PyTorch-compatible optimisers on any differentiable 1D or 2D function."
 authors = [{ name = "Ronit Kunkolienker", email = "ronitkunk@gmail.com" }]
 readme = "README.md"

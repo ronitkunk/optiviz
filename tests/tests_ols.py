@@ -12,6 +12,7 @@ def test_ols_optimisation():
     w_opt, b_opt = optimise(
         MSE,
         (12.5, 12.5),
+        plot_centre=(1.0,4.0),
         plot_boundary=50,
         iters=100,
         optimiser=torch.optim.SGD,
