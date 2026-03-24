@@ -1,0 +1,575 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Optimiser Landscape</title>
+<style>
+  body { margin: 0; overflow: hidden; }
+  #legend {
+    position: absolute;
+    top: 10px;
+    left: 10px;
+    background: rgba(0,0,0,0.7);
+    color: white;
+    padding: 10px;
+    font-family: monospace;
+  }
+  
+</style>
+</head>
+<body>
+
+<div id="legend"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.156.0/build/three.min.js"></script>
+
+<script>
+// ===== COLORS =====
+const COLORS = [
+  0xff0000, 0x00ff00, 0x0000ff,
+  0xffff00, 0xff00ff, 0x00ffff,
+  0xffffff, 0xff8800, 0x8888ff
+];
+
+// ===== SCENE =====
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x87ceeb);
+
+const camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
+const renderer = new THREE.WebGLRenderer();
+renderer.setSize(window.innerWidth, window.innerHeight);
+document.body.appendChild(renderer.domElement);
+
+// Lighting
+scene.add(new THREE.AmbientLight(0x404040));
+const light = new THREE.DirectionalLight(0xffffff, 1);
+light.position.set(20,30,10);
+scene.add(light);
+
+// group to contain all step dots so we can clear/rewind easily
+const dotsGroup = new THREE.Group();
+scene.add(dotsGroup);
+
+// ===== STATE =====
+let terrainData = null;
+let trajectories = null;
+let currentStep = 0;
+let lastStepTime = 0;
+
+// audio / music state
+let audioCtx = null;
+let musicPlaying = false;
+let minHeight = 0;
+let maxHeight = 0;
+const LOW_FREQ = 261.6255653005986; // Middle C (C4)
+const HIGH_FREQ = 523.2511306011972; // C5
+
+// playback state: start paused until user presses Space
+let playing = false;
+
+// Tracking
+let trackingIndex = null;
+// If true, user moved mouse during current tracking session and overrides auto-lookAt
+let trackingUserOverride = false;
+// Gimbal mode: a cinematic follow mode (toggle with 'G')
+let gimbalMode = false;
+let gimbalTheta = 0; // current angle around optimiser
+const sphereDotRadius = 0.5; // matches current bright dot size in drawStep
+let gimbalRadius = 4; // default, overridden by server /data
+let gimbalHover = 8.0; // default hover height above optimiser y
+const gimbalDeltaTheta = (1 * Math.PI) / 180; // some degrees per step
+
+// ===== CONTROLS =====
+let yaw = 0, pitch = 0;
+let keys = {};
+let _prevTrackingIndex = null;
+let _prevGimbalMode = false;
+
+document.addEventListener('keydown', e => {
+  const key = e.key.toLowerCase();
+  // K toggles play/pause (start visualization)
+  if (key === 'k') {
+    e.preventDefault();
+    playing = !playing;
+    lastStepTime = performance.now();
+    console.log(playing ? 'Play' : 'Pause');
+    keys[key] = true;
+    return;
+  }
+  keys[key] = true;
+  
+
+  // If movement keys pressed while tracking, exit tracking but preserve camera orientation
+  if ((key === 'w' || key === 'a' || key === 's' || key === 'd') && trackingIndex !== null && !gimbalMode) {
+    // only exit tracking on movement if not in gimbal mode
+    trackingIndex = null;
+    camera.rotation.order = "YXZ";
+    yaw = camera.rotation.y;
+    pitch = camera.rotation.x;
+  }
+
+  // Toggle gimbal mode with 'g' (only meaningful during an active tracking session)
+  if (key === 'g') {
+    if (trackingIndex !== null) {
+      gimbalMode = !gimbalMode;
+      // entering gimbal: reset theta so movement starts predictably
+      if (gimbalMode) {
+        gimbalTheta = 0;
+        trackingUserOverride = false; // gimbal manages orientation until user disables
+      }
+      console.log('Gimbal mode', gimbalMode ? 'enabled' : 'disabled');
+      updateLegend();
+    }
+  }
+
+  // Tracking keys 1–9
+  if (!isNaN(key) && key !== '0') {
+    const idx = parseInt(key) - 1;
+    if (trajectories && idx < trajectories.length) {
+      // start (or restart) a tracking session; allow auto-pointing until user moves mouse
+      trackingIndex = idx;
+      trackingUserOverride = false;
+      // reset gimbal theta for fresh tracking session (if gimbal active, it will start from theta=0)
+      gimbalTheta = 0;
+      console.log("Tracking optimiser:", trajectories[idx].name);
+      updateLegend();
+    }
+  }
+
+  // Controls that work even when paused: J=rewind, L=skip, C=clear; none should act in gimbal mode
+  if (!gimbalMode) {
+    if (key === 'j') {
+      // rewind one step
+      if (currentStep > 0) {
+        currentStep = Math.max(0, currentStep - 1);
+        renderSteps(currentStep);
+        lastStepTime = performance.now();
+        console.log('Rewind to step', currentStep);
+      }
+    }
+
+    if (key === 'l') {
+      // skip / advance one step
+      if (trajectories) {
+        const maxLen = Math.max(...trajectories.map(t=>t.path.length));
+        if (currentStep < maxLen) {
+          drawStep(currentStep);
+          currentStep++;
+          lastStepTime = performance.now();
+          console.log('Advance to step', currentStep);
+        }
+      }
+    }
+
+    if (key === 'c') {
+      // clear all steps
+      currentStep = 0;
+      clearDots();
+      lastStepTime = performance.now();
+      console.log('Cleared steps');
+    }
+  }
+
+  // Toggle music when tracking
+  if (key === 'm') {
+    if (trackingIndex !== null) {
+      musicPlaying = !musicPlaying;
+      // resume audio context on user interaction
+      if (musicPlaying) {
+        if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        audioCtx.resume && audioCtx.resume();
+      }
+      console.log('Music', musicPlaying ? 'on' : 'off');
+      updateLegend();
+    }
+  }
+});
+
+document.addEventListener('keyup', e => {
+  keys[e.key.toLowerCase()] = false;
+});
+
+document.body.addEventListener('click', () => {
+  document.body.requestPointerLock();
+});
+
+document.addEventListener('mousemove', (e) => {
+  // When pointer-locked, use movement deltas to rotate camera. If user moves while tracking,
+  // switch to user override for the current tracking session so auto-lookAt is disabled.
+  if (document.pointerLockElement === document.body) {
+    // If gimbal mode is active, ignore pointer panning so user cannot override
+    if (!gimbalMode) {
+      // apply mouse deltas to yaw/pitch regardless of tracking state
+      yaw -= e.movementX * 0.002;
+      pitch -= e.movementY * 0.002;
+      pitch = Math.max(-Math.PI/2, Math.min(Math.PI/2, pitch));
+
+      if (trackingIndex !== null) {
+        trackingUserOverride = true;
+      }
+    }
+  }
+});
+
+// helper: clear all step dots
+function clearDots() {
+  while (dotsGroup.children.length) dotsGroup.remove(dotsGroup.children[0]);
+}
+
+// helper: add a dot to dotsGroup
+function addDot(x,y,z,color, radius=0.05, opacity=1.0) {
+  const mat = new THREE.MeshStandardMaterial({ color: color, transparent: opacity < 1, opacity: opacity });
+  const sphere = new THREE.Mesh(new THREE.SphereGeometry(radius, 8, 8), mat);
+  sphere.position.set(x,y,z);
+  dotsGroup.add(sphere);
+}
+
+// render first n steps (n = number of steps drawn). n may be 0..max
+function renderSteps(n) {
+  clearDots();
+  if (!trajectories) return;
+
+  trajectories.forEach((opt, i) => {
+    for (let s = 0; s < n; s++) {
+      if (s >= opt.path.length) break;
+      const p = opt.path[s];
+      if (s === n-1) {
+        // current bright
+        addDot(p.x, p.y, p.z, COLORS[i], 0.06, 1.0);
+      } else {
+        // faded previous
+        addDot(p.x, p.y, p.z, COLORS[i], 0.05, 0.4);
+      }
+    }
+  });
+}
+
+
+
+// ===== HEIGHT FUNCTION =====
+function getHeight(x, z) {
+  if (!terrainData) return 0;
+
+  const { plot_boundary: size, segments, heights } = terrainData;
+  const half = size/2;
+  const step = size/segments;
+
+  x = Math.max(-half, Math.min(half, x));
+  z = Math.max(-half, Math.min(half, z));
+
+  const gx = (x+half)/step;
+  const gz = (z+half)/step;
+
+  const x0 = Math.floor(gx);
+  const z0 = Math.floor(gz);
+  const x1 = Math.min(x0+1, segments);
+  const z1 = Math.min(z0+1, segments);
+
+  const sx = gx-x0;
+  const sz = gz-z0;
+
+  const h00 = heights[z0][x0];
+  const h10 = heights[z0][x1];
+  const h01 = heights[z1][x0];
+  const h11 = heights[z1][x1];
+
+  const h0 = h00*(1-sx)+h10*sx;
+  const h1 = h01*(1-sx)+h11*sx;
+
+  return h0*(1-sz)+h1*sz;
+}
+
+// ===== FETCH DATA =====
+fetch('/data').then(res=>res.json()).then(data=>{
+  terrainData = data;
+  trajectories = data.trajectories;
+
+  // compute min/max heights
+  if (data && data.heights) {
+    let minH = Infinity;
+    let maxH = -Infinity;
+    for (let rz = 0; rz < data.heights.length; rz++) {
+      for (let rx = 0; rx < data.heights[rz].length; rx++) {
+        const h = data.heights[rz][rx];
+        if (h < minH) minH = h;
+        if (h > maxH) maxH = h;
+      }
+    }
+    minHeight = isFinite(minH) ? minH : 0;
+    maxHeight = isFinite(maxH) ? maxH : 0;
+  }
+
+  // gimbal settings from server (override defaults)
+  if (data && typeof data.gimbal_radius !== 'undefined') gimbalRadius = data.gimbal_radius;
+  if (data && typeof data.gimbal_hover !== 'undefined') gimbalHover = data.gimbal_hover;
+
+  buildTerrain(data);
+  buildLegend(trajectories);
+
+  // position camera at configured centre (server now uses `plot_centre`)
+  const serverCentre = data.plot_centre;
+  const cx = serverCentre ? serverCentre[0] : 0;
+  const cz = serverCentre ? serverCentre[1] : 0;
+  camera.position.set(cx, getHeight(cx,cz)+2, cz);
+});
+
+// ===== TERRAIN =====
+function buildTerrain(data) {
+  const { plot_boundary: size, segments, heights } = data;
+
+  const geo = new THREE.PlaneGeometry(size, size, segments, segments);
+  geo.rotateX(-Math.PI/2);
+
+  const pos = geo.attributes.position;
+  let i = 0;
+
+  for (let z=0; z<=segments; z++) {
+    for (let x=0; x<=segments; x++) {
+      pos.setY(i, heights[z][x]);
+      i++;
+    }
+  }
+
+  geo.computeVertexNormals();
+
+  const mesh = new THREE.Mesh(
+    geo,
+    new THREE.MeshStandardMaterial({ color: 0x228B22 })
+  );
+
+  scene.add(mesh);
+}
+
+// ===== LEGEND =====
+function buildLegend(trajs) {
+  const legend = document.getElementById("legend");
+  // initial render via updateLegend
+  updateLegend();
+}
+
+// Update legend depending on gimbalMode and trackingIndex
+function updateLegend() {
+  const legend = document.getElementById("legend");
+  // force-clear
+  legend.innerHTML = '';
+  if (gimbalMode && trackingIndex !== null && trajectories) {
+    const t = trajectories[trackingIndex];
+    const color = "#" + COLORS[trackingIndex].toString(16).padStart(6,'0');
+    // first line: optimiser name in its color
+    const line1 = document.createElement('div');
+    line1.style.color = color;
+    line1.style.fontWeight = 'bold';
+    line1.textContent = `Gimbal: ${t.name}`;
+    legend.appendChild(line1);
+
+    const line2 = document.createElement('div');
+    line2.style.marginTop = '6px';
+    const musicNextState = musicPlaying ? 'off' : 'on';
+    line2.innerHTML = `<b>G:</b> disable gimbal<br><b>K:</b> play/pause<br><b>M:</b> turn ${musicNextState} music`;
+    legend.appendChild(line2);
+  } else {
+    const h = document.createElement('div');
+    h.innerHTML = '<b>Optimisers</b><br>';
+    legend.appendChild(h);
+
+    if (trajectories) {
+      trajectories.forEach((t,i)=>{
+        const color = "#" + COLORS[i].toString(16).padStart(6,'0');
+        const div = document.createElement('div');
+        div.style.color = color;
+        if (trackingIndex === i) {
+          div.innerHTML = `<b>Tracking</b>: ${t.name}`;
+        } else {
+          div.innerHTML = `<b>${i+1}:</b> track ${t.name}`;
+        }
+        legend.appendChild(div);
+      });
+    }
+
+    const hint = document.createElement('div');
+    hint.style.marginTop = '6px';
+    // Only show G (gimbal) & M (music) hints when user is currently tracking an optimiser
+    let hintHtml = '<b>J:</b> rewind<br><b>K:</b> play/pause<br><b>L:</b> skip<br><b>C:</b> clear<br>';
+    if (trackingIndex !== null) {
+      hintHtml += '<b>G:</b> gimbal<br>';
+      const musicNextState = musicPlaying ? 'off' : 'on';
+      hintHtml += `<b>M:</b> turn ${musicNextState} music<br>`;
+    }
+    hintHtml += '<b>W/A/S/D:</b> move';
+    hint.innerHTML = hintHtml;
+    legend.appendChild(hint);
+  }
+  // no debug visual cues in production
+}
+
+
+// ===== DRAW STEP =====
+function drawStep(step) {
+  // drawStep now rebuilds rendered steps up to (step), so total drawn = step+1
+  renderSteps(step + 1);
+  // If we're tracking and music is enabled, play note for this step
+  if (trackingIndex !== null && musicPlaying && trajectories) {
+    const opt = trajectories[trackingIndex];
+    if (step < opt.path.length) {
+      const p = opt.path[step];
+      playNoteForY(p.y);
+    }
+  }
+}
+
+// Play a short note mapped from height y to frequency between LOW_FREQ and HIGH_FREQ
+function playNoteForY(y) {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  const now = audioCtx.currentTime;
+
+  // map y to 0..1 based on minHeight..maxHeight
+  let t = 0.5;
+  if (maxHeight > minHeight) {
+    t = (y - minHeight) / (maxHeight - minHeight);
+    t = Math.max(0, Math.min(1, t));
+  }
+  const freq = LOW_FREQ + t * (HIGH_FREQ - LOW_FREQ);
+
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.type = 'sine';
+  osc.frequency.setValueAtTime(freq, now);
+
+  // short envelope
+  gain.gain.setValueAtTime(0.0001, now);
+  gain.gain.linearRampToValueAtTime(0.2, now + 0.01);
+  gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.15);
+
+  osc.connect(gain);
+  gain.connect(audioCtx.destination);
+
+  osc.start(now);
+  osc.stop(now + 0.16);
+  // cleanup
+  osc.onended = () => {
+    osc.disconnect();
+    gain.disconnect();
+  };
+}
+
+// (no debug helpers)
+
+// ===== ANIMATION =====
+const speed = 0.3;
+
+function animate(time) {
+  requestAnimationFrame(animate);
+
+  const forward = new THREE.Vector3(Math.sin(yaw), 0, Math.cos(yaw));
+  const right = new THREE.Vector3(forward.z, 0, -forward.x);
+
+  // Cancel tracking if moving
+  
+
+  // ===== TRACKING MODE =====
+  if (trackingIndex !== null && trajectories) {
+    const opt = trajectories[trackingIndex];
+
+    if (currentStep < opt.path.length) {
+
+      const p = opt.path[currentStep];
+
+      // Handle next-step safely
+      let next;
+      if (currentStep < opt.path.length - 1) {
+        next = opt.path[currentStep + 1];
+      } else {
+        next = opt.path[currentStep]; // reuse last
+      }
+
+      // Position camera
+      camera.position.set(p.x, p.y + 2, p.z);
+
+      if (gimbalMode) {
+        // Gimbal: hover at fixed height and move on a circle around the optimiser
+        const center = new THREE.Vector3(p.x, p.y, p.z);
+        const cx = center.x + gimbalRadius * Math.cos(gimbalTheta);
+        const cz = center.z + gimbalRadius * Math.sin(gimbalTheta);
+        // Height is terrain height at the camera's (cx,cz) plus hover offset
+        const cy = getHeight(cx, cz) + gimbalHover;
+
+        camera.position.set(cx, cy, cz);
+        camera.lookAt(center);
+
+        // keep yaw/pitch consistent with lookAt in case user exits to free-mode
+        const dirG = center.clone().sub(camera.position).normalize();
+        yaw = Math.atan2(dirG.x, -dirG.z);
+        pitch = Math.asin(dirG.y);
+      }
+      else if (!trackingUserOverride) {
+        // Look at next position (default behavior)
+        const target = new THREE.Vector3(next.x, next.y, next.z);
+        camera.lookAt(target);
+
+        // Extract yaw/pitch so WASD resumes smoothly later
+        const dir = target.clone().sub(camera.position).normalize();
+        // Use -dir.z to align with free-mode yaw convention and avoid 180° flip
+        yaw = Math.atan2(dir.x, -dir.z);
+        pitch = Math.asin(dir.y);
+      } else {
+        // User moved mouse during this tracking session: let yaw/pitch control orientation
+        camera.rotation.order = "YXZ";
+        camera.rotation.y = yaw;
+        camera.rotation.x = pitch;
+      }
+    }
+  }
+
+  // ===== FREE MODE =====
+  else if (terrainData) {
+    if (keys['w']) camera.position.add(forward.clone().multiplyScalar(-speed));
+    if (keys['s']) camera.position.add(forward.clone().multiplyScalar(speed));
+    if (keys['a']) camera.position.add(right.clone().multiplyScalar(-speed));
+    if (keys['d']) camera.position.add(right.clone().multiplyScalar(speed));
+
+    const half = terrainData.plot_boundary/2;
+    camera.position.x = Math.max(-half, Math.min(half, camera.position.x));
+    camera.position.z = Math.max(-half, Math.min(half, camera.position.z));
+
+    camera.position.y = getHeight(camera.position.x, camera.position.z) + 2;
+
+    camera.rotation.order = "YXZ";
+    camera.rotation.y = yaw;
+    camera.rotation.x = pitch;
+  }
+
+  // ===== STEP =====
+  if (terrainData && trajectories && playing) {
+    if (time - lastStepTime > terrainData.iter_delay) {
+      drawStep(currentStep);
+      currentStep++;
+      // advance gimbal theta on each step so camera orbits slowly
+      if (gimbalMode) {
+        gimbalTheta += gimbalDeltaTheta;
+      }
+      lastStepTime = time;
+    }
+  }
+
+  // update legend if tracking/gimbal state changed (fixes missed keydown updates)
+  if (_prevTrackingIndex !== trackingIndex || _prevGimbalMode !== gimbalMode) {
+    _prevTrackingIndex = trackingIndex;
+    _prevGimbalMode = gimbalMode;
+    updateLegend();
+  }
+
+  renderer.render(scene, camera);
+}
+
+animate();
+
+// Resize
+window.addEventListener('resize', ()=>{
+  camera.aspect = window.innerWidth/window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+</script>
+
+</body>
+</html>
