@@ -1,5 +1,5 @@
 # OptiViz
-Walk along loss landscapes and ride along as your favourite optimisers battle it out for the global minimum with OptiViz 1.0, the latest update to OptiViz.
+Walk along a loss landscape, watch from the sidelines, or ride along as your favourite optimisers battle it out for the best minimum with **OptiViz 1.0**, the latest update to OptiViz.
 ![Gradient descent with momentum minimising an egg-carton raised by a quadratic.](https://raw.githubusercontent.com/ronitkunk/optiviz/main/sgd_interactive.png)
 
 Optiviz is a python package that enables effortless visualisation of *any* PyTorch optimiser on *any* differentiable function in one or two variables. OptiViz might find educational use in an introductory nonlinear optimisation or deep learning class.

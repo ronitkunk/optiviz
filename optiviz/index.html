@@ -225,21 +225,28 @@ function addDot(x,y,z,color, radius=0.05, opacity=1.0) {
 }
 
 // render first n steps (n = number of steps drawn). n may be 0..max
+// render only the last K steps (sliding window)
+const TRAIL_LENGTH = 100;
+
 function renderSteps(n) {
   clearDots();
   if (!trajectories) return;
 
+  const start = Math.max(0, n - TRAIL_LENGTH);
+
   trajectories.forEach((opt, i) => {
-    for (let s = 0; s < n; s++) {
+    for (let s = start; s < n; s++) {
       if (s >= opt.path.length) break;
       const p = opt.path[s];
-      if (s === n-1) {
-        // current bright
-        addDot(p.x, p.y, p.z, COLORS[i], 0.06, 1.0);
-      } else {
-        // faded previous
-        addDot(p.x, p.y, p.z, COLORS[i], 0.05, 0.4);
-      }
+
+      const isCurrent = (s === n - 1);
+      const age = n - 1 - s; // 0 = newest, TRAIL_LENGTH-1 = oldest
+
+      // fade older points
+      const opacity = isCurrent ? 1.0 : 1.0 - (age / TRAIL_LENGTH);
+      const radius = isCurrent ? 1.0 : 0.6;
+
+      addDot(p.x, p.y, p.z, COLORS[i], radius, opacity);
     }
   });
 }
